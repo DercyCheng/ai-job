@@ -81,13 +81,20 @@ type PromptRequest struct {
 	Stream    bool                   `json:"stream"`
 }
 
-// PromptResponse represents a response to a prompt request
-type PromptResponse struct {
-	ContextID    string                 `json:"context_id"`
-	PromptID     string                 `json:"prompt_id"`
-	CompletionID string                 `json:"completion_id"`
-	Completion   string                 `json:"completion"`
-	Metadata     map[string]interface{} `json:"metadata"`
+// AddPromptRequest represents a request to add a prompt to a context (client version)
+type AddPromptRequest struct {
+	Prompt   string                 `json:"prompt"`
+	PromptID string                 `json:"prompt_id,omitempty"`
+	ParentID string                 `json:"parent_id,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	Stream   bool                   `json:"stream"`
+}
+
+// AddPromptResponse represents a response to an add prompt request
+type AddPromptResponse struct {
+	PromptID   string                 `json:"prompt_id"`
+	Completion string                 `json:"completion"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // AddNodeRequest represents a request to add a node to a context

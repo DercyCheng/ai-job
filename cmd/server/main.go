@@ -42,6 +42,8 @@ func main() {
 	// Create repositories
 	taskRepo := database.NewTaskRepository(db)
 	workerRepo := database.NewWorkerRepository(db)
+	mcpTaskRepo := database.NewMCPTaskRepository(db)
+	mcpContextRepo := database.NewMCPContextRepository(db)
 
 	// Create and start scheduler
 	schedulerSvc := scheduler.New(taskRepo, workerRepo, scheduler.Config{
@@ -59,11 +61,12 @@ func main() {
 	}
 
 	// Create and start API server
-	server := api.New(taskRepo, workerRepo, api.Config{
+	server := api.New(taskRepo, workerRepo, mcpTaskRepo, mcpContextRepo, api.Config{
 		Host:           cfg.Server.Host,
 		Port:           cfg.Server.Port,
 		Timeout:        cfg.Server.Timeout,
 		MaxRequestSize: cfg.Server.MaxRequestSize,
+		MCPServerURL:   cfg.MCP.ServerURL,
 	})
 
 	// Handle graceful shutdown

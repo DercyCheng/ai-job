@@ -20,23 +20,39 @@ type Config struct {
 	Port           string
 	Timeout        time.Duration
 	MaxRequestSize int64
+	MCPServerURL   string // URL for the MCP server
 }
 
 // Server represents the API server
 type Server struct {
-	router     *chi.Mux
-	taskRepo   *database.TaskRepository
-	workerRepo *database.WorkerRepository
-	config     Config
+	router         *chi.Mux
+	taskRepo       *database.TaskRepository
+	workerRepo     *database.WorkerRepository
+	mcpTaskRepo    *database.MCPTaskRepository
+	mcpContextRepo *database.MCPContextRepository
+	mcpHandler     *MCPHandler
+	config         Config
 }
 
 // New creates a new API server
-func New(taskRepo *database.TaskRepository, workerRepo *database.WorkerRepository, config Config) *Server {
+func New(taskRepo *database.TaskRepository, workerRepo *database.WorkerRepository,
+	mcpTaskRepo *database.MCPTaskRepository, mcpContextRepo *database.MCPContextRepository,
+	config Config) *Server {
 	s := &Server{
-		router:     chi.NewRouter(),
-		taskRepo:   taskRepo,
-		workerRepo: workerRepo,
-		config:     config,
+		router:         chi.NewRouter(),
+		taskRepo:       taskRepo,
+		workerRepo:     workerRepo,
+		mcpTaskRepo:    mcpTaskRepo,
+		mcpContextRepo: mcpContextRepo,
+		config:         config,
+	}
+
+	// Create MCP handler if enabled
+	if mcpTaskRepo != nil && mcpContextRepo != nil {
+		if config.MCPServerURL != "" {
+			s.mcpHandler = NewMCPHandler(mcpTaskRepo, mcpContextRepo, config.MCPServerURL)
+			log.Printf("MCP handler initialized with server URL: %s", config.MCPServerURL)
+		}
 	}
 
 	s.setupRoutes()
@@ -71,6 +87,11 @@ func (s *Server) setupRoutes() {
 			r.Put("/{id}/status", s.updateWorkerStatus)
 		})
 	})
+
+	// Register MCP routes if the handler is available
+	if s.mcpHandler != nil {
+		s.mcpHandler.RegisterRoutes(s.router)
+	}
 }
 
 // CreateTaskRequest represents a request to create a new task

@@ -7,6 +7,7 @@ A distributed task scheduling system for large language model inference and trai
 - **Go Backend**: Handles API, scheduling, and worker management
 - **Python Workers**: Execute model inference and training tasks
 - **Database**: Store task status, results, and configurations
+- **Model Context Protocol (MCP)**: Standardized protocol for LLM interactions
 
 ![Architecture Diagram](docs/architecture.png)
 
@@ -18,6 +19,7 @@ A distributed task scheduling system for large language model inference and trai
 - **Database**: Stores task information, configurations, and results
 - **Monitoring**: Track system performance, worker health, and task status
 - **LLM Server**: Python FastAPI server for model inference
+- **MCP Server**: Implementation of the Model Context Protocol for standardized LLM interactions
 
 ## Features
 
@@ -28,6 +30,9 @@ A distributed task scheduling system for large language model inference and trai
 - **Model Variety**: Supports both API-based (OpenAI) and local models
 - **Scalability**: Can scale horizontally by adding more workers
 - **Monitoring**: Tracks task progress and worker health
+- **MCP Support**: Implementation of the Model Context Protocol for standardized LLM interactions
+- **Streaming Responses**: Support for streaming completions from language models in real-time
+- **Context Management**: Efficient management of conversation contexts using the MCP standard
 
 ## Getting Started
 
