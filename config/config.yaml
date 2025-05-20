@@ -1,0 +1,56 @@
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
+  timeout: 30s
+  max_request_size: "10MB"
+
+# Database configuration
+database:
+  driver: "postgres"
+  host: "localhost"
+  port: 5432
+  user: "aijob"
+  password: "password" # Use environment variables in production
+  name: "aijob"
+  max_open_conns: 20
+  max_idle_conns: 5
+  conn_max_lifetime: "1h"
+
+# Worker configuration
+worker:
+  max_workers: 5
+  task_timeout: "30m"
+  poll_interval: "1s"
+  heartbeat_interval: "10s"
+
+# LLM configuration
+llm:
+  models:
+    - name: "gpt-3.5-turbo"
+      provider: "openai"
+      max_context_length: 4096
+    - name: "llama-2-70b"
+      provider: "local"
+      model_path: "/models/llama-2-70b"
+      max_context_length: 4096
+      quantization: "int8"
+    - name: "mistral-7b"
+      provider: "local"
+      model_path: "/models/mistral-7b"
+      max_context_length: 8192
+      quantization: "int4"
+
+# Queue configuration
+queue:
+  driver: "redis"
+  address: "localhost:6379"
+  password: "" # Use environment variables in production
+  max_retry: 3
+  job_ttl: "24h"
+
+# Logging configuration
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
