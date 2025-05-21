@@ -155,7 +155,7 @@ func (c *Client) AddPromptStream(ctx context.Context, contextID string, req AddP
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	// Execute the request
-	httpResp, err := c.client.Do(httpReq)
+	httpResp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -167,5 +167,5 @@ func (c *Client) AddPromptStream(ctx context.Context, contextID string, req AddP
 	}
 
 	// Create and return the prompt stream
-	return NewPromptStream(ctx, httpResp.Body, c.client), nil
+	return NewPromptStream(ctx, httpResp.Body, c.HTTPClient), nil
 }

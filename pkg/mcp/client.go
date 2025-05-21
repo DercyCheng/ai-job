@@ -109,6 +109,12 @@ type AddNodeResponse struct {
 	Node      ContextNode `json:"node"`
 }
 
+// PromptResponse represents a response to a prompt request
+type PromptResponse struct {
+	Completion string                 `json:"completion"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+}
+
 // DeleteNodeResponse represents a response after deleting a node
 type DeleteNodeResponse struct {
 	ContextID string `json:"context_id"`
