@@ -22,12 +22,28 @@ import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
 logger = logging.getLogger("ai-worker")
+logger.setLevel(logging.INFO)
+
+# Create formatter
+formatter = logging.Formatter(
+    '{"time": "%(asctime)s", "name": "%(name)s", "level": "%(levelname)s", "message": "%(message)s"}',
+    datefmt="%Y-%m-%dT%H:%M:%S%z"
+)
+
+# Console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(formatter)
+
+# File handler
+log_dir = "/var/log/app"
+os.makedirs(log_dir, exist_ok=True)
+file_handler = logging.FileHandler(f"{log_dir}/ai-worker.log")
+file_handler.setFormatter(formatter)
+
+# Add handlers
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
 
 class Config:
     """Configuration for the worker."""

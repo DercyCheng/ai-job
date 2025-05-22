@@ -88,22 +88,34 @@ def load_model(model_name: str) -> Dict:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
     
-    # Load the model with optimizations appropriate for the model size
-    kwargs = {}
+    # Load the model with optimizations appropriate for the model size and type
+    kwargs = {
+        "trust_remote_code": True,  # Needed for Qwen and some DeepSeek models
+        "device_map": device
+    }
+    
+    # Model-specific optimizations
     if "int8" in model_name.lower():
         kwargs["load_in_8bit"] = True
     elif "int4" in model_name.lower():
         kwargs["load_in_4bit"] = True
+        
+    # Special handling for Qwen models
+    if "qwen" in model_name.lower():
+        kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        
+    # Special handling for DeepSeek models
+    if "deepseek" in model_name.lower():
+        kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     
     start_time = time.time()
     
     try:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            device_map=device,
             **kwargs
         )
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         
         # Create the generation pipeline
         gen_pipeline = pipeline(
@@ -245,6 +257,49 @@ async def get_model_info(model_name: str):
                 provider="local",
                 max_context_length=8192,
                 required_memory=8_000_000_000,
+                requires_gpu=True
+            )
+        
+        elif "qwen" in model_name.lower():
+            size = "7b"
+            if "7b" in model_name.lower():
+                size = "7b"
+            elif "14b" in model_name.lower():
+                size = "14b"
+            elif "72b" in model_name.lower():
+                size = "72b"
+                
+            memory_map = {
+                "7b": 7_000_000_000,
+                "14b": 14_000_000_000,
+                "72b": 72_000_000_000
+            }
+            
+            return ModelInfoResponse(
+                name=model_name,
+                provider="Qwen",
+                max_context_length=32768,  # Qwen3 supports 32k context
+                required_memory=memory_map.get(size, 7_000_000_000),
+                requires_gpu=True
+            )
+            
+        elif "deepseek" in model_name.lower():
+            size = "7b"
+            if "7b" in model_name.lower():
+                size = "7b"
+            elif "33b" in model_name.lower():
+                size = "33b"
+                
+            memory_map = {
+                "7b": 7_000_000_000,
+                "33b": 33_000_000_000
+            }
+            
+            return ModelInfoResponse(
+                name=model_name,
+                provider="DeepSeek",
+                max_context_length=16384,  # DeepSeek v3 supports 16k context
+                required_memory=memory_map.get(size, 7_000_000_000),
                 requires_gpu=True
             )
             

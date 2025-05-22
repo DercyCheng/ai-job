@@ -37,11 +37,16 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: ai-job-llm-server
-    command: python /app/scripts/python/llm_server.py --host 0.0.0.0 --port 8000
+    command: python /app/scripts/python/llm_server.py --host 0.0.0.0 --port 8000 --preload /models/qwen/Qwen3-7B --preload /models/deepseek/deepseek-coder-v3-7b
     volumes:
       - ./models:/models
+      - ./models/qwen/Qwen3-7B:/models/qwen/Qwen3-7B
+      - ./models/deepseek/deepseek-coder-v3-7b:/models/deepseek/deepseek-coder-v3-7b
     ports:
       - "8000:8000"
+    environment:
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb=128
+      - TRANSFORMERS_CACHE=/models/.cache
     deploy:
       resources:
         reservations:
@@ -99,7 +104,48 @@ services:
     deploy:
       replicas: 2
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-job-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - server
+      - worker
+      - llm-server
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-job-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  loki:
+    image: grafana/loki:latest
+    container_name: ai-job-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yml
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: ai-job-promtail
+    volumes:
+      - ./:/var/log/app
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
+    depends_on:
+      - loki
+
 volumes:
   postgres-data:
   redis-data:
   models:
+  grafana-data:

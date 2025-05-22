@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"ai-job/internal/database"
+	"ai-job/internal/metrics"
 	"ai-job/internal/models"
 	"ai-job/pkg/mcp"
 )
@@ -18,6 +20,9 @@ type MCPWorker struct {
 	mcpContextRepo *database.MCPContextRepository
 	mcpClient      *mcp.Client
 	workerID       string
+	metrics        *metrics.Metrics
+	lastHeartbeat  time.Time
+	mu             sync.RWMutex
 }
 
 // NewMCPWorker creates a new MCP worker
@@ -27,15 +32,27 @@ func NewMCPWorker(mcpTaskRepo *database.MCPTaskRepository, mcpContextRepo *datab
 		mcpContextRepo: mcpContextRepo,
 		mcpClient:      mcp.NewClient(mcpServerURL),
 		workerID:       workerID,
+		metrics:        metrics.GetMetrics(),
+		lastHeartbeat:  time.Now(),
 	}
 }
 
 // ProcessTask processes an MCP task
 func (w *MCPWorker) ProcessTask(ctx context.Context, task *models.MCPTask) error {
+	// Update metrics
+	w.metrics.TasksInProgress.Inc()
+	startTime := time.Now()
+	defer func() {
+		w.metrics.TasksInProgress.Dec()
+		w.metrics.TaskDuration.WithLabelValues(string(task.Type)).
+			Observe(time.Since(startTime).Seconds())
+	}()
+
 	// Update task status to running
 	task.Status = models.TaskStatusRunning
 	task.StartedAt = timePtr(time.Now())
 	if err := w.mcpTaskRepo.Update(ctx, task); err != nil {
+		w.metrics.WorkerErrors.WithLabelValues("status_update").Inc()
 		return fmt.Errorf("failed to update task status: %w", err)
 	}
 
@@ -43,6 +60,7 @@ func (w *MCPWorker) ProcessTask(ctx context.Context, task *models.MCPTask) error
 	var err error
 
 	// Process task based on type
+	w.metrics.TaskTypeCount.WithLabelValues(string(task.Type)).Inc()
 	switch task.Type {
 	case models.MCPTaskTypeCreateContext:
 		result, err = w.handleCreateContext(ctx, task)
@@ -56,21 +74,30 @@ func (w *MCPWorker) ProcessTask(ctx context.Context, task *models.MCPTask) error
 		result, err = w.handleDeleteContext(ctx, task)
 	default:
 		err = fmt.Errorf("unsupported MCP task type: %s", task.Type)
+		w.metrics.WorkerErrors.WithLabelValues("invalid_type").Inc()
 	}
 
 	// Update task status based on result
 	if err != nil {
 		task.Status = models.TaskStatusFailed
 		task.Error = err.Error()
+		w.metrics.TasksCompleted.WithLabelValues("failed").Inc()
+		w.metrics.WorkerErrors.WithLabelValues("execution").Inc()
 		log.Printf("MCP task %s failed: %v", task.ID, err)
 	} else {
 		task.Status = models.TaskStatusCompleted
 		task.Output = result
+		w.metrics.TasksCompleted.WithLabelValues("completed").Inc()
 		log.Printf("MCP task %s completed successfully", task.ID)
 	}
 
 	task.CompletedAt = timePtr(time.Now())
-	return w.mcpTaskRepo.Update(ctx, task)
+	if updateErr := w.mcpTaskRepo.Update(ctx, task); updateErr != nil {
+		w.metrics.WorkerErrors.WithLabelValues("status_update").Inc()
+		return fmt.Errorf("failed to update task status: %w", updateErr)
+	}
+
+	return err
 }
 
 // handleCreateContext handles creating a new context
@@ -290,6 +317,41 @@ func (w *MCPWorker) handleDeleteContext(ctx context.Context, task *models.MCPTas
 }
 
 // Helper function to create time pointer
+func (w *MCPWorker) CheckHealth(ctx context.Context) error {
+	// Check last heartbeat time
+	w.mu.RLock()
+	lastHeartbeat := w.lastHeartbeat
+	w.mu.RUnlock()
+
+	if time.Since(lastHeartbeat) > 2*time.Minute {
+		w.metrics.WorkerErrors.WithLabelValues("heartbeat_timeout").Inc()
+		return fmt.Errorf("worker heartbeat timeout")
+	}
+
+	// Check resource usage
+	if err := w.reportResourceUsage(ctx); err != nil {
+		w.metrics.WorkerErrors.WithLabelValues("resource_check").Inc()
+		return fmt.Errorf("resource check failed: %w", err)
+	}
+
+	return nil
+}
+
+// reportResourceUsage collects and reports worker resource usage
+func (w *MCPWorker) reportResourceUsage(ctx context.Context) error {
+	// TODO: Implement actual resource monitoring
+	// For now report default values
+	cpuUsage := 0.5
+	memUsage := 1.0
+	gpuUsage := 0.3
+
+	w.metrics.ResourceUsage.WithLabelValues("cpu", "cores").Set(cpuUsage)
+	w.metrics.ResourceUsage.WithLabelValues("memory", "gb").Set(memUsage)
+	w.metrics.ResourceUsage.WithLabelValues("gpu", "percent").Set(gpuUsage)
+
+	return nil
+}
+
 func timePtr(t time.Time) *time.Time {
 	return &t
 }

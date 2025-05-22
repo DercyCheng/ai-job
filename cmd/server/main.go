@@ -11,16 +11,26 @@ import (
 	"ai-job/internal/database"
 	"ai-job/internal/scheduler"
 	"ai-job/pkg/config"
+	"ai-job/pkg/logger"
+
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	log.Println("Starting AI Job Scheduler Server")
-
-	// Load configuration
+	// Load configuration first
 	cfg, err := config.Load("config/config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+
+	// Then initialize logger with config
+	logCfg := logger.ConvertConfig(cfg.Logging)
+	logger, err := logger.NewLogger(logCfg)
+	if err != nil {
+		logrus.Fatalf("Failed to initialize logger: %v", err)
+	}
+	logrus.SetOutput(logger.Writer())
+	logrus.Info("Starting AI Job Scheduler Server")
 
 	// Connect to database
 	db, err := database.New(database.Config{
@@ -35,7 +45,7 @@ func main() {
 		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
 	})
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logrus.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer db.Close()
 
@@ -57,7 +67,7 @@ func main() {
 	defer cancel()
 
 	if err := schedulerSvc.Start(ctx); err != nil {
-		log.Fatalf("Failed to start scheduler: %v", err)
+		logrus.Fatalf("Failed to start scheduler: %v", err)
 	}
 
 	// Create and start API server

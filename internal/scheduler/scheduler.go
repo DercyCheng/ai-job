@@ -7,8 +7,37 @@ import (
 	"time"
 
 	"ai-job/internal/database"
+	"ai-job/internal/metrics"
 	"ai-job/internal/models"
 )
+
+// WorkerResources tracks worker resource availability
+type WorkerResources struct {
+	CPU    float64
+	Memory float64
+	GPU    float64
+	mu     sync.RWMutex
+}
+
+func (wr *WorkerResources) Update(cpu, memory, gpu float64) {
+	wr.mu.Lock()
+	defer wr.mu.Unlock()
+	wr.CPU = cpu
+	wr.Memory = memory
+	wr.GPU = gpu
+
+	// Update metrics
+	m := metrics.GetMetrics()
+	m.ResourceUsage.WithLabelValues("cpu", "cores").Set(cpu)
+	m.ResourceUsage.WithLabelValues("memory", "gb").Set(memory)
+	m.ResourceUsage.WithLabelValues("gpu", "percent").Set(gpu)
+}
+
+func (wr *WorkerResources) Get() (float64, float64, float64) {
+	wr.mu.RLock()
+	defer wr.mu.RUnlock()
+	return wr.CPU, wr.Memory, wr.GPU
+}
 
 // Config represents scheduler configuration
 type Config struct {
@@ -25,6 +54,8 @@ type Scheduler struct {
 	config     Config
 	stopCh     chan struct{}
 	waitGroup  sync.WaitGroup
+	resources  *WorkerResources
+	metrics    *metrics.Metrics
 }
 
 // New creates a new scheduler
@@ -34,6 +65,8 @@ func New(taskRepo *database.TaskRepository, workerRepo *database.WorkerRepositor
 		workerRepo: workerRepo,
 		config:     config,
 		stopCh:     make(chan struct{}),
+		resources:  &WorkerResources{},
+		metrics:    metrics.GetMetrics(),
 	}
 }
 
@@ -94,45 +127,91 @@ func (s *Scheduler) processPendingTasks(ctx context.Context) error {
 		return nil
 	}
 
-	// Simple round-robin task assignment
-	workerIndex := 0
+	// Update metrics
+	s.metrics.TasksQueued.Set(float64(len(pendingTasks)))
+	s.metrics.TasksInProgress.Set(float64(len(availableWorkers)))
+
+	// Smart task assignment with resource awareness
 	for _, task := range pendingTasks {
-		if workerIndex >= len(availableWorkers) {
-			break
+		assigned := false
+
+		// Try to find best worker for the task
+		for i, worker := range availableWorkers {
+			if s.canWorkerHandleTask(worker, task) {
+				// Update task status
+				task.Status = models.TaskStatusScheduled
+				task.WorkerID = &worker.ID
+				task.UpdatedAt = time.Now()
+
+				if err := s.taskRepo.Update(ctx, task); err != nil {
+					log.Printf("Error updating task %s: %v", task.ID, err)
+					continue
+				}
+
+				// Update worker status and resources
+				worker.Status = "busy"
+				worker.CurrentTaskID = &task.ID
+				s.updateWorkerResources(worker, task)
+
+				if err := s.workerRepo.Update(ctx, worker); err != nil {
+					log.Printf("Error updating worker %s: %v", worker.ID, err)
+
+					// Revert task status if worker update fails
+					task.Status = models.TaskStatusPending
+					task.WorkerID = nil
+					if err := s.taskRepo.Update(ctx, task); err != nil {
+						log.Printf("Error reverting task %s: %v", task.ID, err)
+					}
+					continue
+				}
+
+				log.Printf("Assigned task %s to worker %s", task.ID, worker.ID)
+				s.metrics.TasksCompleted.WithLabelValues("scheduled").Inc()
+
+				// Remove assigned worker from available list
+				availableWorkers = append(availableWorkers[:i], availableWorkers[i+1:]...)
+				assigned = true
+				break
+			}
 		}
 
-		worker := availableWorkers[workerIndex]
+		if !assigned && len(availableWorkers) > 0 {
+			// Fallback to simple round-robin if no suitable worker found
+			worker := availableWorkers[0]
 
-		// Update task status
-		task.Status = models.TaskStatusScheduled
-		task.WorkerID = &worker.ID
-		task.UpdatedAt = time.Now()
+			// Update task status
+			task.Status = models.TaskStatusScheduled
+			task.WorkerID = &worker.ID
+			task.UpdatedAt = time.Now()
 
-		if err := s.taskRepo.Update(ctx, task); err != nil {
-			log.Printf("Error updating task %s: %v", task.ID, err)
-			continue
-		}
-
-		// Update worker status
-		worker.Status = "busy"
-		worker.CurrentTaskID = &task.ID
-
-		if err := s.workerRepo.Update(ctx, worker); err != nil {
-			log.Printf("Error updating worker %s: %v", worker.ID, err)
-
-			// Revert task status if worker update fails
-			task.Status = models.TaskStatusPending
-			task.WorkerID = nil
 			if err := s.taskRepo.Update(ctx, task); err != nil {
-				log.Printf("Error reverting task %s: %v", task.ID, err)
+				log.Printf("Error updating task %s: %v", task.ID, err)
+				continue
 			}
 
-			continue
+			// Update worker status
+			worker.Status = "busy"
+			worker.CurrentTaskID = &task.ID
+			s.updateWorkerResources(worker, task)
+
+			if err := s.workerRepo.Update(ctx, worker); err != nil {
+				log.Printf("Error updating worker %s: %v", worker.ID, err)
+
+				// Revert task status if worker update fails
+				task.Status = models.TaskStatusPending
+				task.WorkerID = nil
+				if err := s.taskRepo.Update(ctx, task); err != nil {
+					log.Printf("Error reverting task %s: %v", task.ID, err)
+				}
+				continue
+			}
+
+			log.Printf("Assigned task %s to worker %s (fallback)", task.ID, worker.ID)
+			s.metrics.TasksCompleted.WithLabelValues("scheduled").Inc()
+
+			// Remove assigned worker from available list
+			availableWorkers = availableWorkers[1:]
 		}
-
-		log.Printf("Assigned task %s to worker %s", task.ID, worker.ID)
-
-		workerIndex++
 	}
 
 	return nil
@@ -243,4 +322,83 @@ func (s *Scheduler) handleFailedWorkers(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// canWorkerHandleTask checks if worker can handle the task
+func (s *Scheduler) canWorkerHandleTask(worker *models.Worker, task *models.Task) bool {
+	// Basic checks:
+	// 1. Worker must be available
+	// 2. Worker must not already have a task assigned
+	if worker.Status != "available" || worker.CurrentTaskID != nil {
+		return false
+	}
+
+	// Check if worker supports the task model
+	if task.ModelName != "" {
+		supported := false
+		for _, capability := range worker.Capabilities {
+			if capability == task.ModelName {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return false
+		}
+	}
+
+	// Get current resource usage
+	cpu, memory, gpu := s.resources.Get()
+
+	// Check resource requirements
+	requiredCPU := 0.5 // Default CPU requirement
+	requiredMem := 1.0 // Default memory requirement in GB
+	requiredGPU := 0.3 // Default GPU requirement
+
+	if task.ModelName != "" {
+		// Adjust for model-specific requirements
+		requiredCPU = 1.0
+		requiredMem = 2.0
+		requiredGPU = 0.7
+	}
+
+	// Check if worker has sufficient resources
+	// Convert memory from bytes to GB for comparison
+	availableMemGB := float64(worker.AvailableMemory) / 1024 / 1024 / 1024
+	if cpu+requiredCPU > worker.AvailableCPU ||
+		memory+requiredMem > availableMemGB ||
+		gpu+requiredGPU > worker.AvailableGPU {
+		return false
+	}
+
+	return true
+}
+
+// updateWorkerResources updates tracked resources after task assignment
+func (s *Scheduler) updateWorkerResources(worker *models.Worker, task *models.Task) {
+	// Calculate resource requirements (must match canWorkerHandleTask)
+	cpuReq := 0.5 // Default CPU requirement
+	memReq := 1.0 // Default memory requirement in GB
+	gpuReq := 0.3 // Default GPU requirement
+
+	if task.ModelName != "" {
+		// Model-specific requirements
+		cpuReq = 1.0
+		memReq = 2.0
+		gpuReq = 0.7
+	}
+
+	// Update metrics
+	s.metrics.ResourceUsage.WithLabelValues("assigned_tasks", "count").Inc()
+	s.metrics.ResourceRequests.WithLabelValues("cpu", "cores").Set(cpuReq)
+	s.metrics.ResourceRequests.WithLabelValues("memory", "gb").Set(memReq)
+	s.metrics.ResourceRequests.WithLabelValues("gpu", "percent").Set(gpuReq)
+
+	// Update global resource tracking
+	s.resources.Update(cpuReq, memReq, gpuReq)
+
+	// Update worker's available resources (in-memory only)
+	worker.AvailableCPU -= cpuReq
+	worker.AvailableMemory -= int64(memReq * 1024 * 1024 * 1024) // Convert GB to bytes
+	worker.AvailableGPU -= gpuReq
 }

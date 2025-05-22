@@ -9,16 +9,26 @@ import (
 	"syscall"
 
 	"ai-job/pkg/config"
+	"ai-job/pkg/logger"
+
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
-	log.Println("Starting AI Job Worker Manager")
-
-	// Load configuration
+	// Load configuration first
 	cfg, err := config.Load("config/config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+
+	// Then initialize logger with config
+	logCfg := logger.ConvertConfig(cfg.Logging)
+	logger, err := logger.NewLogger(logCfg)
+	if err != nil {
+		logrus.Fatalf("Failed to initialize logger: %v", err)
+	}
+	logrus.SetOutput(logger.Writer())
+	logrus.Info("Starting AI Job Worker Manager")
 
 	// Get the root directory of the application
 	rootDir, err := os.Getwd()

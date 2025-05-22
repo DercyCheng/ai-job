@@ -53,7 +53,18 @@ queue:
 logging:
   level: "info"
   format: "json"
-  output: "stdout"
+  outputs: ["stdout", "file"]
+  file:
+    path: "/var/log/app/ai-job.log"
+    max_size: 10 # MB
+    max_backups: 3
+    max_age: 7 # days
+  loki:
+    enabled: true
+    url: "http://loki:3100"
+    labels:
+      job: "ai-job"
+      env: "${APP_ENV:-development}"
 
 # MCP configuration
 mcp:
