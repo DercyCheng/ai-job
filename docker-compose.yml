@@ -1,52 +1,36 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:14-alpine
-    container_name: ai-job-postgres
-    environment:
-      POSTGRES_USER: aijob
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: aijob
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./deployments/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+  consul:
+    image: consul:latest
     ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aijob"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:alpine
-    container_name: ai-job-redis
-    ports:
-      - "6379:6379"
+      - "8500:8500"
     volumes:
-      - redis-data:/data
+      - consul_data:/consul/data
+    command: "agent -server -bootstrap-expect=1 -client=0.0.0.0"
+    networks:
+      - ai-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:8500/v1/agent/self"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 3
+      start_period: 30s
 
-  llm-server:
+  model-worker:
     build:
-      context: .
+      context: ./model-worker
       dockerfile: Dockerfile
-    container_name: ai-job-llm-server
-    command: python /app/scripts/python/llm_server.py --host 0.0.0.0 --port 8000 --preload /models/qwen/Qwen3-7B --preload /models/deepseek/deepseek-coder-v3-7b
-    volumes:
-      - ./models:/models
-      - ./models/qwen/Qwen3-7B:/models/qwen/Qwen3-7B
-      - ./models/deepseek/deepseek-coder-v3-7b:/models/deepseek/deepseek-coder-v3-7b
     ports:
-      - "8000:8000"
+      - "5000:5000"
+    volumes:
+      - ./model-worker:/app
     environment:
-      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb=128
-      - TRANSFORMERS_CACHE=/models/.cache
+      - MODEL_PATH=deepseek-ai/deepseek-v3-7b
+      - DEVICE=cuda
+      - CONSUL_HOST=consul
+    networks:
+      - ai-network
     deploy:
       resources:
         reservations:
@@ -54,98 +38,122 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      consul:
+        condition: service_healthy
 
-  server:
+  qwen-worker:
+    build:
+      context: ./model-worker
+      dockerfile: Dockerfile.qwen
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./model-worker:/app
+    environment:
+      - MODEL_PATH=Qwen/Qwen1.5-7B-Chat
+      - DEVICE=cuda
+      - CONSUL_HOST=consul
+    networks:
+      - ai-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      consul:
+        condition: service_healthy
+
+  auth-service:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ai-job-server
-    command: /app/bin/server
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      llm-server:
-        condition: service_started
+      args:
+        SERVICE: auth
+    ports:
+      - "8082:8082"
     volumes:
-      - ./config:/app/config
+      - ./configs:/app/configs
+    environment:
+      - CONSUL_HOST=consul
+    networks:
+      - ai-network
+    depends_on:
+      - consul
+      - model-worker
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  mcp-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: mcp
     ports:
       - "8080:8080"
+    volumes:
+      - ./configs:/app/configs
     environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=aijob
-      - DB_PASSWORD=password
-      - DB_NAME=aijob
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - LLM_SERVER_URL=http://llm-server:8000
+      - CONSUL_HOST=consul
+    networks:
+      - ai-network
+    depends_on:
+      - consul
+      - model-worker
+      - auth-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-  worker:
+  gateway-service:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ai-job-worker
-    command: /app/bin/worker
-    depends_on:
-      - server
+      args:
+        SERVICE: gateway
+    ports:
+      - "8081:8081"
     volumes:
-      - ./config:/app/config
+      - ./configs:/app/configs
     environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=aijob
-      - DB_PASSWORD=password
-      - DB_NAME=aijob
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - LLM_SERVER_URL=http://llm-server:8000
-    deploy:
-      replicas: 2
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: ai-job-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - CONSUL_HOST=consul
+    networks:
+      - ai-network
     depends_on:
-      - server
-      - worker
-      - llm-server
-
-  grafana:
-    image: grafana/grafana:latest
-    container_name: ai-job-grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning
-    depends_on:
-      - prometheus
-
-  loki:
-    image: grafana/loki:latest
-    container_name: ai-job-loki
-    ports:
-      - "3100:3100"
-    volumes:
-      - ./monitoring/loki-config.yml:/etc/loki/local-config.yml
-
-  promtail:
-    image: grafana/promtail:latest
-    container_name: ai-job-promtail
-    volumes:
-      - ./:/var/log/app
-      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
-    depends_on:
-      - loki
+      - consul
+      - mcp-service
+      - auth-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
-  postgres-data:
-  redis-data:
-  models:
-  grafana-data:
+  model-cache:
+  consul_data:
+
+networks:
+  ai-network:
+    driver: bridge

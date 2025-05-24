@@ -1,0 +1,71 @@
+# Consul配置
+consul:
+  host: "consul"
+  port: 8500
+  service: "gateway"
+  check_url: "/health"
+  tags:
+    - "api"
+    - "gateway"
+
+# MCP服务配置
+mcp:
+  port: 8080
+  log_level: info
+  workers:
+    - name: "deepseek-worker"
+      url: "http://localhost:5000"
+      model: "deepseek-v3-7b"
+      priority: 1
+      max_tokens: 4096
+      timeout: 30
+      streaming: true
+    - name: "qwen-worker"
+      url: "http://localhost:5001"
+      model: "qwen3-7b"
+      priority: 1
+      max_tokens: 4096
+      timeout: 30
+      streaming: true
+
+# API网关配置
+gateway:
+  port: 8081
+  log_level: info
+  target_url: "http://localhost:8080"
+  routes:
+    - path: "/v1/chat"
+      target: "http://localhost:8080/mcp/v1/chat"
+      auth_required: true
+    - path: "/v1/models"
+      target: "http://localhost:8080/mcp/v1/models"
+      auth_required: true
+    - path: "/health"
+      target: "http://localhost:8080/health"
+      auth_required: false
+
+# Auth服务配置
+auth:
+  port: 8082
+  log_level: info
+  jwt_secret: "change-this-in-production"
+  token_expiry: 86400 # 24小时
+
+# 模型配置
+models:
+  deepseek-v3-7b:
+    name: "DeepSeek V3 7B"
+    description: "DeepSeek V3是一个强大的中文大语言模型"
+    context_length: 4096
+    capabilities:
+      - chat
+      - completion
+      - embedding
+  qwen3-7b:
+    name: "Qwen3 7B"
+    description: "Qwen3是阿里云发布的最新一代开源大语言模型"
+    context_length: 4096
+    capabilities:
+      - chat
+      - completion
+      - embedding
